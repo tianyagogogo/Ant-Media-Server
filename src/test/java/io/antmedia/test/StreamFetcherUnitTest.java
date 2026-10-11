@@ -3,38 +3,28 @@ package io.antmedia.test;
 import static org.bytedeco.ffmpeg.global.avformat.avformat_find_stream_info;
 import static org.bytedeco.ffmpeg.global.avformat.avformat_open_input;
 import static org.bytedeco.ffmpeg.global.avutil.*;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.atLeastOnce;
-import static org.mockito.Mockito.doNothing;
-import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.timeout;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.charset.CharacterCodingException;
-import java.nio.charset.CharsetDecoder;
-import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
-import java.util.UUID;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ConcurrentSkipListSet;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
+import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.awaitility.Awaitility;
 import org.bytedeco.ffmpeg.avcodec.AVCodecParameters;
@@ -43,27 +33,32 @@ import org.bytedeco.ffmpeg.avformat.AVFormatContext;
 import org.bytedeco.ffmpeg.avformat.AVInputFormat;
 import org.bytedeco.ffmpeg.avformat.AVStream;
 import org.bytedeco.ffmpeg.avutil.AVDictionary;
+import org.bytedeco.ffmpeg.avutil.AVDictionaryEntry;
 import org.bytedeco.ffmpeg.global.avcodec;
 import org.bytedeco.ffmpeg.global.avformat;
 import org.bytedeco.ffmpeg.global.avutil;
 import org.bytedeco.javacpp.BytePointer;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.BeforeClass;
 import org.junit.Rule;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.rules.TestRule;
 import org.junit.rules.TestWatcher;
 import org.junit.runner.Description;
-import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mockito;
+import org.red5.server.api.scope.IScope;
 import org.red5.server.scope.WebScope;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationContext;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.annotation.DirtiesContext.ClassMode;
 import org.springframework.test.context.ContextConfiguration;
-import org.springframework.test.context.junit4.AbstractJUnit4SpringContextTests;
+import org.springframework.test.context.junit.jupiter.SpringExtension;
 
 import io.antmedia.AntMediaApplicationAdapter;
 import io.antmedia.AppSettings;
@@ -78,6 +73,7 @@ import io.antmedia.ipcamera.OnvifCamera;
 import io.antmedia.muxer.Mp4Muxer;
 import io.antmedia.muxer.MuxAdaptor;
 import io.antmedia.rest.model.Result;
+import io.antmedia.statistic.StatsCollector;
 import io.antmedia.streamsource.StreamFetcher;
 import io.antmedia.streamsource.StreamFetcher.WorkerThread;
 import io.antmedia.streamsource.StreamFetcherManager;
@@ -85,7 +81,11 @@ import io.vertx.core.Vertx;
 
 @ContextConfiguration(locations = { "test.xml" })
 @DirtiesContext(classMode = ClassMode.AFTER_EACH_TEST_METHOD)
-public class StreamFetcherUnitTest extends AbstractJUnit4SpringContextTests {
+@ExtendWith(SpringExtension.class)
+public class StreamFetcherUnitTest {
+
+	@Autowired
+	private ApplicationContext applicationContext;
 
 	private WebScope appScope;
 	protected static Logger logger = LoggerFactory.getLogger(StreamFetcherUnitTest.class);
@@ -114,14 +114,14 @@ public class StreamFetcherUnitTest extends AbstractJUnit4SpringContextTests {
 		}
 	};
 
-	@BeforeClass
+	@BeforeAll
 	public static void beforeClass() {
 		//	avformat.av_register_all();
 		avformat.avformat_network_init();
 		avutil.av_log_set_level(avutil.AV_LOG_INFO);
 	}
 
-	@Before
+	@BeforeEach
 	public void before() {
 
 		try {
@@ -166,7 +166,7 @@ public class StreamFetcherUnitTest extends AbstractJUnit4SpringContextTests {
 
 	}
 
-	@After
+	@AfterEach
 	public void after() {
 
 		stopCameraEmulator();
@@ -182,7 +182,229 @@ public class StreamFetcherUnitTest extends AbstractJUnit4SpringContextTests {
 		}
 		 */
 	}
+    @Test
+    public void testWaitForStreamThreadToStop(){
+        String streamid = "test";
+        StreamFetcherManager manager = Mockito.spy(app.getStreamFetcherManager());
+        StreamFetcher streamFetcher = Mockito.spy(new StreamFetcher("test", streamid, "test", appScope, vertx, 0));
+        manager.getStreamFetcherList().put(streamid,streamFetcher);
 
+        // thread already stoped
+        assertTrue(manager.stopStreaming("test",true).isSuccess());
+        verify(streamFetcher).stopStreamBlocking();
+
+        reset(streamFetcher);
+
+        // semaphore already release
+        manager.getStreamFetcherList().put(streamid,streamFetcher);
+        streamFetcher.setThreadActive(true);
+        streamFetcher.getIsThreadStopedSemaphore().release();
+        assertTrue(manager.stopStreaming("test",true).isSuccess());
+        verify(streamFetcher).stopStreamBlocking();
+
+
+        reset(streamFetcher);
+
+        // could not stop stream failed
+        manager.getStreamFetcherList().put(streamid,streamFetcher);
+        streamFetcher.setThreadActive(true);
+        streamFetcher.getIsThreadStopedSemaphore().drainPermits();
+        assertFalse(manager.stopStreaming("test",true).isSuccess());
+        verify(streamFetcher).stopStreamBlocking();
+
+        // without waiting stop
+        manager.getStreamFetcherList().put(streamid,streamFetcher);
+        streamFetcher.setThreadActive(true);
+        assertTrue(manager.stopStreaming("test",false).isSuccess());
+    }
+
+	@Test
+	public void testForceStartLogic() throws Exception {
+		Vertx mockedVertx = Mockito.mock(Vertx.class);
+		DataStore dataStore = Mockito.mock(DataStore.class);
+		AntMediaApplicationAdapter appAdapter = Mockito.mock(AntMediaApplicationAdapter.class);
+
+		Broadcast broadcast = Mockito.mock(Broadcast.class);
+		when(broadcast.getStreamId()).thenReturn("streamId");
+		when(broadcast.getType()).thenReturn(AntMediaApplicationAdapter.STREAM_SOURCE);
+		when(broadcast.getStatus()).thenReturn(AntMediaApplicationAdapter.BROADCAST_STATUS_BROADCASTING);
+
+		StreamFetcher fetcher = Mockito.spy(new StreamFetcher("url", "streamId", AntMediaApplicationAdapter.STREAM_SOURCE, appScope, mockedVertx, 0));
+		fetcher.setDataStore(dataStore);
+		Mockito.doReturn(appAdapter).when(fetcher).getInstance();
+		when(dataStore.get("streamId")).thenReturn(broadcast);
+		Mockito.when(appAdapter.updateBroadcastStatus(Mockito.anyString(), Mockito.anyLong(),
+				Mockito.anyString(), Mockito.any(Broadcast.class), Mockito.isNull(), Mockito.anyString())).thenReturn(broadcast);
+
+		// Case 1: without force flag, should return before preparing input
+		fetcher.setStartStreamForce(false);
+		WorkerThread workerNoForce = Mockito.spy(fetcher.new WorkerThread());
+		Mockito.doReturn(false).when(workerNoForce).prepareInputContext(Mockito.any());
+		workerNoForce.run();
+		Mockito.verify(workerNoForce, Mockito.never()).prepareInputContext(Mockito.any());
+
+		// Case 2: with force flag, should bypass status check and reset flag
+		fetcher.setStartStreamForce(true);
+		WorkerThread workerForce = Mockito.spy(fetcher.new WorkerThread());
+		Mockito.doReturn(false).when(workerForce).prepareInputContext(Mockito.any());
+		workerForce.run();
+		Mockito.verify(workerForce, Mockito.times(1)).prepareInputContext(Mockito.any());
+
+		// Flag consumed; next run without setting force should abort again
+		WorkerThread workerAfter = Mockito.spy(fetcher.new WorkerThread());
+		Mockito.doReturn(false).when(workerAfter).prepareInputContext(Mockito.any());
+		workerAfter.run();
+		Mockito.verify(workerAfter, Mockito.never()).prepareInputContext(Mockito.any());
+	}
+
+	@Test
+	public void testStreamFinishedCalledAfterBroadcastClosed() {
+		//when a source never published (streamPublished=false) and a reconnect/playlist listener is
+		//attached, streamFinished() used to fire before closeBroadcast(), so the late closeBroadcast()
+		//clobbered the stream the listener had just restarted. It must run after the broadcast is closed.
+		Vertx mockedVertx = Mockito.mock(Vertx.class);
+		AntMediaApplicationAdapter appAdapter = Mockito.mock(AntMediaApplicationAdapter.class);
+
+		StreamFetcher fetcher = Mockito.spy(new StreamFetcher("url", "streamId", AntMediaApplicationAdapter.STREAM_SOURCE, appScope, mockedVertx, 0));
+		Mockito.doReturn(appAdapter).when(fetcher).getInstance();
+
+		StreamFetcher.IStreamFetcherListener listener = Mockito.mock(StreamFetcher.IStreamFetcherListener.class);
+		fetcher.setStreamFetcherListener(listener);
+
+		//streamPublished defaults to false; muxAdaptor/inputFormatContext/bufferQueue are null and pkt is
+		//null, so every native branch in close() is skipped
+		WorkerThread worker = fetcher.new WorkerThread();
+		worker.close(null);
+
+		InOrder inOrder = Mockito.inOrder(appAdapter, listener);
+		inOrder.verify(appAdapter).closeBroadcast(Mockito.eq("streamId"), Mockito.any(), Mockito.any());
+		inOrder.verify(listener).streamFinished(Mockito.any());
+	}
+
+	boolean inTheThread = false;
+	@Test
+	public void testPlayListSynch() throws Exception {
+		StreamFetcherManager manager = Mockito.spy(app.getStreamFetcherManager());
+		String streamId = String.valueOf((Math.random() * 100000));
+		
+		Broadcast.PlayListItem broadcastItem1 = new Broadcast.PlayListItem("https://avtshare01.rz.tu-ilmenau.de/avt-vqdb-uhd-1/test_1/segments/bigbuck_bunny_8bit_750kbps_720p_60.0fps_h264.mp4", AntMediaApplicationAdapter.VOD);
+
+		//create a broadcast
+		Broadcast.PlayListItem broadcastItem2 = new Broadcast.PlayListItem("https://avtshare01.rz.tu-ilmenau.de/avt-vqdb-uhd-1/test_1/segments/bigbuck_bunny_8bit_750kbps_720p_60.0fps_h264.mp4", AntMediaApplicationAdapter.VOD);
+
+		List<Broadcast.PlayListItem> broadcastList = new ArrayList<>();
+
+		broadcastList.add(broadcastItem1);
+		broadcastList.add(broadcastItem2);
+		
+		
+		//create broadcast 
+		Broadcast playlist = new Broadcast();
+		playlist.setStreamId(streamId);
+		playlist.setType(AntMediaApplicationAdapter.PLAY_LIST);
+		playlist.setPlayListItemList(broadcastList);
+		playlist.setStatus(AntMediaApplicationAdapter.BROADCAST_STATUS_BROADCASTING);
+		app.getDataStore().save(playlist);
+		
+		manager.setWaitForTestMilliseconds(1000);
+		
+		//start play list
+		Result result = manager.startPlaylist(playlist);
+		assertTrue(result.isSuccess());
+		
+		
+		//call play next item in list
+		inTheThread = false;
+		new Thread() {
+			public void run() {
+				inTheThread = true;
+				manager.playItemInList(playlist.getStreamId(), null, 1);
+				
+			};
+		}.start();
+		
+		Awaitility.await().atMost(2000, TimeUnit.MILLISECONDS).until(() -> {
+			return inTheThread == true;
+		});
+		
+		
+		//call stopBroadcasting immediatelly
+		result = manager.stopStreaming(streamId, false);
+		
+		//check the result that it returns true
+		assertTrue(result.isSuccess());
+
+		manager.setWaitForTestMilliseconds(0);	
+
+	}
+	
+	@Test
+	public void testPlayItemInList() throws Exception {
+
+		StreamFetcherManager manager = Mockito.spy(app.getStreamFetcherManager());
+		String streamId = String.valueOf((Math.random() * 100000));
+
+		Broadcast.PlayListItem broadcastItem1 = new Broadcast.PlayListItem("https://avtshare01.rz.tu-ilmenau.de/avt-vqdb-uhd-1/test_1/segments/bigbuck_bunny_8bit_750kbps_720p_60.0fps_h264.mp4", AntMediaApplicationAdapter.VOD);
+
+		//create a broadcast
+		Broadcast.PlayListItem broadcastItem2 = new Broadcast.PlayListItem("https://avtshare01.rz.tu-ilmenau.de/avt-vqdb-uhd-1/test_1/segments/bigbuck_bunny_8bit_750kbps_720p_60.0fps_h264.mp4", AntMediaApplicationAdapter.VOD);
+
+		//create a broadcast
+		Broadcast.PlayListItem broadcastItem3 = new Broadcast.PlayListItem("https://avtshare01.rz.tu-ilmenau.de/avt-vqdb-uhd-1/test_1/segments/bigbuck_bunny_8bit_750kbps_720p_60.0fps_h264.mp4", AntMediaApplicationAdapter.VOD);
+
+		List<Broadcast.PlayListItem> broadcastList = new ArrayList<>();
+
+		broadcastList.add(broadcastItem1);
+		broadcastList.add(broadcastItem2);
+		broadcastList.add(broadcastItem3);
+
+		Broadcast playlist = new Broadcast();
+		playlist.setStreamId(streamId);
+		playlist.setType(AntMediaApplicationAdapter.PLAY_LIST);
+		playlist.setPlayListItemList(broadcastList);
+		playlist.setStatus(AntMediaApplicationAdapter.BROADCAST_STATUS_BROADCASTING);
+
+        StreamFetcher streamFetcher = mock(StreamFetcher.class);
+        Semaphore semaphore = new Semaphore(0);
+        semaphore.release();
+        doReturn(semaphore).when(streamFetcher).getIsThreadStopedSemaphore();
+        doReturn(streamFetcher).when(manager).getStreamFetcher(streamId);
+
+		app.getDataStore().save(playlist);
+
+        StatsCollector statsCollectorMock = Mockito.mock(StatsCollector.class);
+        doReturn(true).when(statsCollectorMock).enoughResource();
+        app.setStatsCollector(statsCollectorMock);
+		boolean startStreaming = app.startStreaming(playlist).isSuccess();
+		assertTrue(startStreaming);
+
+
+		assertEquals(1, app.getStreamFetcherManager().getStreamFetcherList().size());
+
+		StreamFetcher.IStreamFetcherListener listener = Mockito.mock(StreamFetcher.IStreamFetcherListener.class);
+		manager.getStreamFetcher(streamId).setStreamFetcherListener(listener);
+		manager.playItemInList(playlist.getStreamId(),listener,1);
+
+		// stream not stoped need to wait for the thread to stop to start next playlist
+		verify(manager,timeout(10000).times(1)).createAndStartNextPlaylistItem(any(),any(),anyInt());
+
+        Mockito.reset(manager);
+
+		// thread already start next stream directly
+        doReturn(streamFetcher).when(manager).getStreamFetcher(streamId);
+		manager.playItemInList(playlist.getStreamId(),streamFetcher.getStreamFetcherListener(),1);
+		verify(manager,times(1)).createAndStartNextPlaylistItem(any(),any(),anyInt());
+
+		// invalid url
+		Mockito.reset(manager);
+		broadcastItem1.setStreamUrl("test");
+		playlist.getPlayListItemList().set(playlist.getCurrentPlayIndex(),broadcastItem1);
+        doReturn(new Result(true)).when(manager).startPlaylist(playlist);
+		manager.playItemInList(playlist.getStreamId(),streamFetcher.getStreamFetcherListener(),1);
+		verify(manager,times(1)).stopStreaming(streamId, true);
+		verify(manager).skipNextPlaylistQueue(playlist,1);
+		verify(manager).startPlaylist(playlist);
+	}
 
 
 
@@ -254,10 +476,10 @@ public class StreamFetcherUnitTest extends AbstractJUnit4SpringContextTests {
 		assertEquals(0, broadcast.getSpeed(), 2L);
 
 
-		app.getStreamFetcherManager().stopStreaming(newCam.getStreamId());
+		app.getStreamFetcherManager().stopStreaming(newCam.getStreamId(), false);
 		assertEquals(0, app.getStreamFetcherManager().getStreamFetcherList().size());
 
-		app.stopStreaming(newCam);
+		app.stopStreaming(newCam, false, null);
 
 
 		logger.info("leaving testBugUpdateStreamFetcherStatus");
@@ -621,6 +843,7 @@ public class StreamFetcherUnitTest extends AbstractJUnit4SpringContextTests {
 		pkt.pts(0);
 		pkt.dts(0);
 		worker.packetRead(pkt);
+		worker.calculateBufferStatus();
 
 		assertEquals(100, worker.getBufferedDurationMs());
 
@@ -629,13 +852,15 @@ public class StreamFetcherUnitTest extends AbstractJUnit4SpringContextTests {
 		pkt.pts(50);
 		pkt.dts(50);
 		worker.packetRead(pkt);
-
+		worker.calculateBufferStatus();
+		
 		assertEquals(100, worker.getBufferedDurationMs());
 
 		pkt = new AVPacket();
 		pkt.pts(500);
 		pkt.dts(500);
 		worker.packetRead(pkt);
+		worker.calculateBufferStatus();
 
 		assertEquals(500, worker.getBufferedDurationMs());
 
@@ -672,6 +897,8 @@ public class StreamFetcherUnitTest extends AbstractJUnit4SpringContextTests {
 			Broadcast newCam = new Broadcast("streamSource", "127.0.0.1:8080", "admin", "admin",
 					"src/test/resources/test_video_360p.flv",
 					AntMediaApplicationAdapter.STREAM_SOURCE);
+			
+			newCam.setStreamId("stream_id_" + RandomStringUtils.randomAlphanumeric(12));
 
 			assertNotNull(newCam.getStreamUrl());
 
@@ -925,19 +1152,11 @@ public class StreamFetcherUnitTest extends AbstractJUnit4SpringContextTests {
 
 
 	@Test
-	public void testBugUnexpectedStream()
+	public void testBugUnexpectedStream() throws InterruptedException
 	{
 
-		AVFormatContext inputFormatContext = avformat.avformat_alloc_context();
-
-		AVStream stream = avformat.avformat_new_stream(inputFormatContext, null);
-		AVCodecParameters pars = new AVCodecParameters();
-		stream.codecpar(pars);
+		AVCodecParameters pars = new AVCodecParameters(); 
 		pars.codec_type(AVMEDIA_TYPE_DATA);
-		stream.codecpar(pars);
-
-
-
 
 		Mp4Muxer mp4Muxer = Mockito.spy(new Mp4Muxer(null, null, "streams"));
 
@@ -949,8 +1168,11 @@ public class StreamFetcherUnitTest extends AbstractJUnit4SpringContextTests {
 		mp4Muxer.addStream(pars, MuxAdaptor.TIME_BASE_FOR_MS, 0);
 
 		Mockito.verify(mp4Muxer, Mockito.never()).avNewStream(Mockito.any());
+		
+		pars.close();
+		pars = null;
 
-		avformat.avformat_free_context(inputFormatContext);
+		
 	}
 
 	@Test
@@ -979,8 +1201,21 @@ public class StreamFetcherUnitTest extends AbstractJUnit4SpringContextTests {
 		//test HLS Source
 		String streamId = testFetchStreamSources("src/test/resources/test.m3u8", false, false, true, "fmp4");
 		
-		File f = new File("webapps/junit/streams/"+streamId +"_init.mp4");
-		assertTrue(f.exists());
+		String[] filesInStreams = new File("webapps/junit/streams").list();
+		boolean initFileFound = false;
+		
+		//matches 13 digits because System.currentTimeMillis() is used in the file
+        String regex = streamId + "_\\d{13}_init.mp4";
+		System.out.println("regex:"+regex);
+
+		Pattern REGEX = Pattern.compile(regex);
+
+		for (int i = 0; i < filesInStreams.length; i++) {
+			System.out.println("files:"+filesInStreams[i]);
+			initFileFound |= REGEX.matcher(filesInStreams[i]).matches();
+		}
+		assertTrue(initFileFound);
+		
 		logger.info("leaving testHLSSource");
 	}
 
@@ -1005,7 +1240,9 @@ public class StreamFetcherUnitTest extends AbstractJUnit4SpringContextTests {
 	public void testShoutcastSource() {
 		logger.info("running testShoutcastSource");
 		//test Southcast Source - http://sc13.shoutcaststreaming.us/
-		testFetchStreamSources("http://107.181.227.250:8526/stream/1/", false, false);
+		//http://107.181.227.250:8526/stream/1/
+		//http://icecast.rte.ie/ieradio1
+		testFetchStreamSources("http://stream.antenne.de:80/rockantenne", false, false);
 		logger.info("leaving testShoutcastSource");
 	}
 
@@ -1612,12 +1849,89 @@ public class StreamFetcherUnitTest extends AbstractJUnit4SpringContextTests {
 		assertEquals(200, lastSentDTS[0]);
 		assertEquals(200, lastSentDTS[1]);
 
-
-		
-		
-		
-		
-		
 	}
 
+	@Test
+	public void testRTSPAllowedMediaTypes(){
+  		// allowed_media_types should be remove from url params ( because what if rtsp server does not support url param eg. happytime rtsp server )
+		StreamFetcher streamFetcher = new StreamFetcher("rtsp://127.0.0.1:6554/test.flv?allowed_media_types=audio", "testRtspUrlParam", "rtsp_source", appScope, Vertx.vertx(), 0);
+
+		AVDictionary testOptions = new AVDictionary();
+		streamFetcher.parseRtspUrlParams(testOptions);
+    		assertEquals(streamFetcher.getStreamUrl(),"rtsp://127.0.0.1:6554/test.flv");
+
+		AVDictionaryEntry entry = avutil.av_dict_get(testOptions, "allowed_media_types", null, 0);
+		if (entry != null) {
+			String value = entry.value().getString();
+			assertTrue("audio".equalsIgnoreCase(value));
+		}
+
+		assert(true);
+
+    		// other url parameters should not be removed
+
+		StreamFetcher streamFetcher1 = new StreamFetcher("rtsp://127.0.0.1:6554/test.flv?testParam=testParam", "testRtspUrlParam1", "rtsp_source", appScope, Vertx.vertx(), 0);
+
+		AVDictionary testOptions1 = new AVDictionary();
+		streamFetcher1.parseRtspUrlParams(testOptions1);
+    		assertEquals("rtsp://127.0.0.1:6554/test.flv?testParam=testParam",streamFetcher1.getStreamUrl());
+
+		//incorrect url format
+		StreamFetcher streamFetcher2 = new StreamFetcher("rtsp://127.0.0.1:  space  6554/test.flv?allowed_media_types=video", "testRtspUrlParam2", "rtsp_source", appScope, Vertx.vertx(), 0);
+
+		AVDictionary testOptions2 = new AVDictionary();
+		streamFetcher2.parseRtspUrlParams(testOptions2);
+
+		entry = avutil.av_dict_get(testOptions2, "allowed_media_types", null, 0);
+    		assertTrue(entry == null);
+
+		// param order should be preserverd
+
+		streamFetcher1 = new StreamFetcher("rtsp://test:asdf%2499@127.0.0.1:554/cam/realmonitor?channel=2&subtype=1&allowed_media_types=video", "testRtspUrlParam1", "rtsp_source", appScope, Vertx.vertx(), 0);
+
+		testOptions1 = new AVDictionary();
+		streamFetcher1.parseRtspUrlParams(testOptions1);
+		assertEquals("rtsp://test:asdf%2499@127.0.0.1:554/cam/realmonitor?channel=2&subtype=1",streamFetcher1.getStreamUrl());
+	}
+	@Test
+	public void testInternalStreamFetcher(){
+
+		//InternalStreamFetcher internalStreamFetcher = new InternalStreamFetcher("rtmp://test.com/test", "testRtspUrlParam1", "rtsp_source", appScope, Vertx.vertx(), 0);
+		//AppSettings mockAppSettings = Mockito.mock(AppSettings.class);
+		//doReturn("test").when(mockAppSettings).getClusterCommunicationKey();
+		//assertTrue(internalStreamFetcher.getStreamUrl().startsWith("rtmp://test.com/test?token="));
+        //assertEquals("rtmp://test.com/test", internalStreamFetcher.rtmpUrl);
+	}
+
+	@Test
+	public void testRTSPUrlWithSpecialChars() {
+		// This test replicates the issue where special characters like @ in the password 
+		// cause issues when UriComponentsBuilder reconstructs the URL.
+		
+		String streamId = "testStreamSpecialChar";
+		// Password is "pass@word", encoded as "pass%40word"
+		String originalUrl = "rtsp://user:pass@word@127.0.0.1:6554/stream?allowed_media_types=video";
+		
+		// The expected behavior is that the URL is cleaned of allowed_media_types 
+		// AND the password remains correctly encoded so it doesn't break the URL structure.
+		// If the @ is decoded to "pass@word", it breaks standard RTSP parsing (two @ symbols).
+		String expectedUrl = "rtsp://user:pass@word@127.0.0.1:6554/stream";
+
+		StreamFetcher streamFetcher = new StreamFetcher(originalUrl, streamId, "rtsp_source", appScope, Vertx.vertx(), 0);
+		
+		AVDictionary options = new AVDictionary();
+		// This method is expected to fail/corrupt the URL if the bug exists
+		streamFetcher.parseRtspUrlParams(options);
+		
+		logger.info("Original URL: {}", originalUrl);
+		logger.info("Resulting URL: {}", streamFetcher.getStreamUrl());
+		
+		assertEquals(expectedUrl, 
+					 streamFetcher.getStreamUrl(), "The stream URL should preserve the encoded @ character in the password to avoid ambiguity");
+		
+		// Also verify the parameter was extracted
+		AVDictionaryEntry entry = avutil.av_dict_get(options, "allowed_media_types", null, 0);
+		assertNotNull(entry, "allowed_media_types should be extracted to options");
+		assertEquals("video", entry.value().getString());
+	}
 }

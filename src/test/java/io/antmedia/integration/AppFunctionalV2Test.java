@@ -1,12 +1,12 @@
 package io.antmedia.integration;
 
 import static org.bytedeco.ffmpeg.global.avformat.avformat_network_init;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -27,6 +27,9 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
+import org.apache.commons.lang3.RandomStringUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
+import org.apache.http.Header;
 import org.apache.http.HttpHeaders;
 import org.apache.http.HttpResponse;
 import org.apache.http.client.CookieStore;
@@ -38,13 +41,13 @@ import org.apache.http.impl.client.BasicCookieStore;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClients;
 import org.apache.http.impl.client.LaxRedirectStrategy;
-import org.apache.tika.utils.ExceptionUtils;
+import org.apache.http.message.BasicHeader;
 import org.awaitility.Awaitility;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.BeforeClass;
 import org.junit.Rule;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.rules.TestRule;
 import org.junit.rules.TestWatcher;
 import org.junit.runner.Description;
@@ -112,6 +115,7 @@ public class AppFunctionalV2Test {
 		if (osName.startsWith("mac os x") || osName.startsWith("darwin")) {
 			OS_TYPE = MAC_OS_X;
 			ffprobePath = "/usr/local/bin/ffprobe";
+			ffmpegPath = "/usr/local/bin/ffmpeg";
 		} else if (osName.startsWith("windows")) {
 			OS_TYPE = WINDOWS;
 		} else if (osName.startsWith("linux")) {
@@ -123,7 +127,7 @@ public class AppFunctionalV2Test {
 		return OS_TYPE;
 	}
 
-	@BeforeClass
+	@BeforeAll
 	public static void beforeClass() {
 		if (OS_TYPE == MAC_OS_X) {
 			ffmpegPath = "/usr/local/bin/ffmpeg";
@@ -132,7 +136,7 @@ public class AppFunctionalV2Test {
 		avformat_network_init();
 	}
 
-	@Before
+	@BeforeEach
 	public void before() {
 		restService = new BroadcastRestService();
 
@@ -166,6 +170,17 @@ public class AppFunctionalV2Test {
 				currentVodNumber = restServiceTest.callTotalVoDNumber();
 				logger.info("vod number after deletion {}", String.valueOf(currentVodNumber));
 			}
+			
+			ConsoleAppRestServiceTest.resetCookieStore();
+			Result result = ConsoleAppRestServiceTest.callisFirstLogin();
+			if (result.isSuccess()) {
+				Result createInitialUser = ConsoleAppRestServiceTest.createDefaultInitialUser();
+				assertTrue(createInitialUser.isSuccess());
+			}
+
+			result = ConsoleAppRestServiceTest.authenticateDefaultUser();
+			assertTrue(result.isSuccess());
+
 
 
 		}
@@ -176,7 +191,7 @@ public class AppFunctionalV2Test {
 	}
 
 
-	@After
+	@AfterEach
 	public void after() {
 		restService = null;
 		try {
@@ -185,7 +200,16 @@ public class AppFunctionalV2Test {
 			e.printStackTrace();
 		}
 	}
-
+	@Test
+	public void testHideTomcatVersion() throws IOException {
+		String url = "http://localhost:5080/nonexistantapp";
+		CloseableHttpClient client = HttpClients.custom().setRedirectStrategy(new LaxRedirectStrategy()).build();
+		HttpUriRequest get = RequestBuilder.get().setUri(url).build();
+		CloseableHttpResponse response = client.execute(get);
+		StringBuffer result = readResponse(response);
+		boolean haveVersion = result.toString().contains("Tomcat") || result.toString().contains("Apache") ;
+		assert(!haveVersion);
+	}
 	@Test
 	public void testRegularExp() {
 		String regularExp = "^.*_{1}[0-9]{3}p{1}\\.mp4{1}$";
@@ -197,9 +221,8 @@ public class AppFunctionalV2Test {
 
 	@Test
 	public void testSetUpEndPointsV2() {
-		assertTrue("This test is moved to RestServiceV2Test#testAddEndpointCrossCheckV2", true);
+		assertTrue(true, "This test is moved to RestServiceV2Test#testAddEndpointCrossCheckV2");
 	}
-
 
 	@Test
 	public void testPlayList() {
@@ -304,6 +327,8 @@ public class AppFunctionalV2Test {
 			AppSettings appSettingsModel = ConsoleAppRestServiceTest.callGetAppSettings("LiveApp");
 			{
 				appSettingsModel.setMaxResolutionAccept(144);
+				appSettingsModel.setDashMuxingEnabled(false);
+
 
 				result = ConsoleAppRestServiceTest.callSetAppSettings("LiveApp", appSettingsModel);
 				assertTrue(result.isSuccess());
@@ -467,6 +492,7 @@ public class AppFunctionalV2Test {
 			appSettingsModel.setMp4MuxingEnabled(true);
 			appSettingsModel.setAcceptOnlyStreamsInDataStore(false);
 			appSettingsModel.setHlsMuxingEnabled(true);
+			appSettingsModel.setEnableTimeTokenForPlay(false);
 			result = ConsoleAppRestServiceTest.callSetAppSettings("LiveApp", appSettingsModel);
 			assertTrue(result.isSuccess());
 			
@@ -485,7 +511,7 @@ public class AppFunctionalV2Test {
 			
 			rtmpSendingProcess.destroy();
 			
-			Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+			Awaitility.await().atMost(20, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
 				return MuxingTest.testFile("http://" + SERVER_ADDR + ":5080/LiveApp/streams/" + streamId + ".mp4");
 			});
 
@@ -495,6 +521,67 @@ public class AppFunctionalV2Test {
 			e.printStackTrace();
 			fail(e.getMessage());
 		}
+	}
+	
+	@Test
+	public void testGzipSupportForHLS() throws Exception 
+	{
+		String streamId = "streamIdTestGzipSupportForHLS" + (int)(Math.random()*90000);
+		
+		
+		
+		AppSettings appSettingsModel = ConsoleAppRestServiceTest.callGetAppSettings("LiveApp");
+		appSettingsModel.setHlsPlayListType("event");		
+		Result result = ConsoleAppRestServiceTest.callSetAppSettings("LiveApp", appSettingsModel);
+		assertTrue(result.isSuccess());
+		
+		
+		Process rtmpSendingProcess = execute(ffmpegPath
+				+ "  -stream_loop -1 -re -i src/test/resources/test.flv  -codec copy -f flv rtmp://127.0.0.1/LiveApp/"
+				+ streamId);
+		
+		String url = "http://" + SERVER_ADDR + ":5080/LiveApp/streams/" +  streamId + ".m3u8";	
+		Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS)
+		.until(() -> MuxingTest.testFile(url));
+		
+		//it will compress after it passes 2048 bytes
+		Awaitility.await().atMost(100, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+			
+			boolean found = false;
+			 try (CloseableHttpClient client = HttpClients.custom().build()) {
+		            HttpUriRequest request = RequestBuilder.head()
+		                    .setUri(url)
+		                    .setHeader(new BasicHeader("Accept-Encoding", "gzip"))
+		                    .setHeader(new BasicHeader("Accept", "*/*"))
+		                    .setHeader(new BasicHeader("Connection", "keep-alive"))
+		                    .build();
+
+		            logger.info("Sending HEAD request to: {}", url);
+		            HttpResponse response = client.execute(request);
+
+		            logger.info("Response Code: {}", response.getStatusLine().getStatusCode());
+
+		            Header[] allHeaders = response.getAllHeaders();
+		            for (Header header : allHeaders) {
+		                logger.info("{}: {}", header.getName(), header.getValue());
+		                if (HttpHeaders.CONTENT_ENCODING.equals(header.getName()) && "gzip".equals(header.getValue())) {
+							found = true;
+							break;
+						}
+		            }
+		        } catch (Exception e) {
+		            logger.error("Error executing request", e);
+		        }
+			
+			return found;
+		});
+		
+		rtmpSendingProcess.destroy();
+		
+		appSettingsModel.setHlsPlayListType("");		
+		result = ConsoleAppRestServiceTest.callSetAppSettings("LiveApp", appSettingsModel);
+		assertTrue(result.isSuccess());
+		
 	}
 
 	@Test
@@ -510,19 +597,9 @@ public class AppFunctionalV2Test {
 			Broadcast broadcastWithSubFolder = restServiceTest.createBroadcast("RTMP_stream_with_subfolder",null,null, "testFolder");
 			{
 				//prepare settings
-				ConsoleAppRestServiceTest.resetCookieStore();
-				Result result = ConsoleAppRestServiceTest.callisFirstLogin();
-				if (result.isSuccess()) {
-					Result createInitialUser = ConsoleAppRestServiceTest.createDefaultInitialUser();
-					assertTrue(createInitialUser.isSuccess());
-				}
-
-				result = ConsoleAppRestServiceTest.authenticateDefaultUser();
-				assertTrue(result.isSuccess());
-
+				
 				appSettingsModel = ConsoleAppRestServiceTest.callGetAppSettings("LiveApp");
 				encoderSettingsActive = appSettingsModel.getEncoderSettings();
-
 
 				mp4MuxingEnabled = appSettingsModel.isMp4MuxingEnabled();
 
@@ -531,7 +608,7 @@ public class AppFunctionalV2Test {
 				List<EncoderSettings> settingsList = new ArrayList<>();
 				settingsList.add(new EncoderSettings(240, 300000, 64000,true));
 				appSettingsModel.setEncoderSettings(settingsList);
-				result = ConsoleAppRestServiceTest.callSetAppSettings("LiveApp", appSettingsModel);
+				Result result = ConsoleAppRestServiceTest.callSetAppSettings("LiveApp", appSettingsModel);
 				assertTrue(result.isSuccess());
 				assertEquals("testFolder",broadcastWithSubFolder.getSubFolder());
 			}
@@ -552,7 +629,7 @@ public class AppFunctionalV2Test {
 			int duration = (int)(System.currentTimeMillis() - processInfo.startInstant().get().toEpochMilli());
 
 			//wait for creating  files
-			Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+			Awaitility.await().atMost(20, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
 				return MuxingTest.testFile("http://" + SERVER_ADDR + ":5080/LiveApp/streams/" + broadcast.getStreamId() + ".mp4");
 			});
 
@@ -804,7 +881,7 @@ public class AppFunctionalV2Test {
 	/**
 	 * TODO: This test case should be improved
 	 */
-	//@Test
+	@Test
 	public void testStatistics() {
 
 		try {
@@ -993,6 +1070,43 @@ public class AppFunctionalV2Test {
 		}else{
 			//if file, then delete it
 			file.delete();
+		}
+	}
+
+	// stream ids containing '2' or 'F' were parsed as path-segment urls and their params overwrote metaData
+	@Test
+	public void testRTMPPublishDoesNotOverwriteMetaData() throws Exception {
+		String metaData = "{\"key1\":\"value1\",\"key2\":\"value2\"}";
+		String streamId = "metaDataRegression2" + RandomStringUtils.randomAlphabetic(8).toLowerCase();
+		String controlStreamId = "metaDataControl" + RandomStringUtils.randomAlphabetic(8).toLowerCase();
+		List<Process> rtmpProcesses = new ArrayList<>();
+
+		try {
+			for (String id : new String[] { streamId, controlStreamId }) {
+				Broadcast broadcast = new Broadcast();
+				broadcast.setStreamId(id);
+				broadcast.setName("TestStream");
+				broadcast.setMetaData(metaData);
+
+				assertEquals(metaData, RestServiceV2Test.callCreateBroadcast(broadcast).getMetaData());
+				assertEquals(metaData, RestServiceV2Test.callGetBroadcast(id).getMetaData());
+
+				rtmpProcesses.add(execute(ffmpegPath
+						+ " -re -i src/test/resources/test.flv -codec copy -f flv rtmp://127.0.0.1/LiveApp/" + id));
+
+				// metaData is written in MuxAdaptor#prepareParameters, before the status goes BROADCASTING
+				Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS)
+						.until(() -> IAntMediaStreamHandler.BROADCAST_STATUS_BROADCASTING
+								.equals(RestServiceV2Test.callGetBroadcast(id).getStatus()));
+
+				assertEquals(metaData, RestServiceV2Test.callGetBroadcast(id).getMetaData(),
+						"metaData was overwritten by the RTMP publish of stream id " + id);
+			}
+		}
+		finally {
+			rtmpProcesses.forEach(Process::destroy);
+			RestServiceV2Test.callDeleteBroadcast(streamId);
+			RestServiceV2Test.callDeleteBroadcast(controlStreamId);
 		}
 	}
 
